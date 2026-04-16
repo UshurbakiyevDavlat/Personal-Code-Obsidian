@@ -1,0 +1,18 @@
+# Core parsing
+tree-sitter>=0.21.0
+
+# Graph algorithms
+networkx>=3.0
+
+# MCP server
+mcp[cli]>=1.0.0
+
+# Data validation
+pydantic>=2.0.0
+
+# Config files
+pyyaml>=6.0
+
+# API server (optional, for FastAPI mode)
+fastapi>=0.110.0
+uvicorn>=0.29.0
