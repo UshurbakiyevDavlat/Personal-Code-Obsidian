@@ -80,6 +80,9 @@ class LanguageConfig:
     body_field: str = "body"
     body_fallback_child_types: tuple = ()
 
+    decorator_types: frozenset = frozenset()         # e.g. {"decorator"} for TS/Python, {"marker_annotation"} for Java
+    decorator_wrapper_types: frozenset = frozenset() # nodes that wrap decorator+class, e.g. {"export_statement"} for TS
+
     call_function_field: str = "function"
     call_accessor_node_types: frozenset = frozenset()
     call_accessor_field: str = "attribute"
@@ -94,6 +97,31 @@ class LanguageConfig:
 
 def _read_text(node, source: bytes) -> str:
     return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
+def _extract_decorator_name(node, source: bytes) -> str | None:
+    """
+    Extract a human-readable name from a decorator / annotation node.
+
+    Handles:
+      - Python/TS/JS:  @Injectable, @Injectable(), @router.get("/path")
+      - Java:          @Service, @Autowired  (marker_annotation / annotation)
+      - C#:            [HttpGet], [Authorize] (attribute node)
+    """
+    raw = _read_text(node, source).strip()
+
+    # Python / TS / JS: text starts with '@'
+    if raw.startswith("@"):
+        name = raw.split("(")[0].split("\n")[0].strip()
+        return name if len(name) > 1 else None
+
+    # Java marker_annotation / C# attribute: look for identifier child
+    for child in node.children:
+        if child.type in ("identifier", "type_identifier", "qualified_name",
+                           "scoped_identifier", "name", "qualified_identifier"):
+            return f"@{_read_text(child, source)}"
+
+    return None
 
 
 def _find_body(node, config: LanguageConfig):
@@ -264,9 +292,10 @@ def _get_cpp_func_name(node, source):
 _PYTHON_CONFIG = LanguageConfig(
     ts_module="tree_sitter_python",
     class_types=frozenset({"class_definition"}),
-    function_types=frozenset({"function_definition"}),
+    function_types=frozenset({"function_definition", "decorated_definition"}),
     import_types=frozenset({"import_statement", "import_from_statement"}),
     call_types=frozenset({"call"}),
+    decorator_types=frozenset({"decorator"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"attribute"}),
     call_accessor_field="attribute",
@@ -280,6 +309,8 @@ _JS_CONFIG = LanguageConfig(
     function_types=frozenset({"function_declaration", "method_definition"}),
     import_types=frozenset({"import_statement"}),
     call_types=frozenset({"call_expression"}),
+    decorator_types=frozenset({"decorator"}),
+    decorator_wrapper_types=frozenset({"export_statement"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
@@ -294,6 +325,8 @@ _TS_CONFIG = LanguageConfig(
     function_types=frozenset({"function_declaration", "method_definition"}),
     import_types=frozenset({"import_statement"}),
     call_types=frozenset({"call_expression"}),
+    decorator_types=frozenset({"decorator"}),
+    decorator_wrapper_types=frozenset({"export_statement"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
@@ -321,6 +354,7 @@ _JAVA_CONFIG = LanguageConfig(
     function_types=frozenset({"method_declaration", "constructor_declaration"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"method_invocation"}),
+    decorator_types=frozenset({"marker_annotation", "annotation"}),
     call_function_field="name",
     call_accessor_node_types=frozenset(),
     function_boundary_types=frozenset({"method_declaration", "constructor_declaration"}),
@@ -366,6 +400,7 @@ _CSHARP_CONFIG = LanguageConfig(
     function_types=frozenset({"method_declaration"}),
     import_types=frozenset({"using_directive"}),
     call_types=frozenset({"invocation_expression"}),
+    decorator_types=frozenset({"attribute"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_access_expression"}),
     call_accessor_field="name",
@@ -513,7 +548,8 @@ def extract_file(
     seen_ids.add(file_nid)
 
     def add_node(nid: str, node_type: str, name: str, language: str,
-                 line_start: int, line_end: int, docstring: str | None = None) -> None:
+                 line_start: int, line_end: int, docstring: str | None = None,
+                 metadata: dict | None = None) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
             nodes.append({
@@ -526,6 +562,7 @@ def extract_file(
                 "line_start": line_start,
                 "line_end": line_end,
                 "docstring": docstring,
+                "metadata": metadata or {},
                 "file_hash": fhash,
             })
 
@@ -546,8 +583,70 @@ def extract_file(
 
     lang = _lang_name(config)
 
-    def walk(node, parent_class_nid: str | None = None, parent_class_name: str | None = None) -> None:
+    def walk(node, parent_class_nid: str | None = None, parent_class_name: str | None = None,
+             _decorators: list | None = None) -> None:
         t = node.type
+
+        # ── TS/JS: export_statement (and similar wrappers) may contain decorators ─
+        if config.decorator_wrapper_types and t in config.decorator_wrapper_types:
+            decs: list[str] = []
+            inner = None
+            for child in node.children:
+                if child.type in config.decorator_types:
+                    name = _extract_decorator_name(child, source)
+                    if name:
+                        decs.append(name)
+                elif child.type in config.class_types or child.type in config.function_types:
+                    inner = child
+            if inner:
+                walk(inner, parent_class_nid, parent_class_name, _decorators=decs or None)
+            else:
+                # e.g. export_statement with no class/function (just export default, etc.)
+                for child in node.children:
+                    if child.type not in config.decorator_types:
+                        walk(child, parent_class_nid, parent_class_name)
+            return
+
+        # ── Python: decorated_definition wraps decorators + class/function ────
+        if t == "decorated_definition":
+            decs: list[str] = []
+            inner = None
+            for child in node.children:
+                if child.type == "decorator":
+                    name = _extract_decorator_name(child, source)
+                    if name:
+                        decs.append(name)
+                elif (child.type in config.class_types or
+                      child.type in config.function_types or
+                      child.type in ("async_function_definition",)):
+                    inner = child
+            if inner:
+                walk(inner, parent_class_nid, parent_class_name, _decorators=decs or None)
+            return
+
+        # ── TS/JS/Java/C#: decorators are direct children of class/method ─────
+        if not _decorators and config.decorator_types:
+            decs = []
+            for child in node.children:
+                if child.type in config.decorator_types:
+                    name = _extract_decorator_name(child, source)
+                    if name:
+                        decs.append(name)
+                # Java: annotations live inside a modifiers node
+                elif child.type == "modifiers":
+                    for mod in child.children:
+                        if mod.type in config.decorator_types:
+                            name = _extract_decorator_name(mod, source)
+                            if name:
+                                decs.append(name)
+                # C#: attributes live inside attribute_list
+                elif child.type == "attribute_list":
+                    for attr in child.children:
+                        if attr.type in config.decorator_types:
+                            name = _extract_decorator_name(attr, source)
+                            if name:
+                                decs.append(name)
+            _decorators = decs or None
 
         # Imports
         if t in config.import_types:
@@ -573,7 +672,8 @@ def extract_file(
             line = node.start_point[0] + 1
             end_line = node.end_point[0] + 1
 
-            add_node(class_nid, "class", class_name, lang, line, end_line)
+            meta = {"decorators": _decorators} if _decorators else {}
+            add_node(class_nid, "class", class_name, lang, line, end_line, metadata=meta)
             add_edge(file_nid, class_nid, "contains", line)
 
             # Inheritance (PHP, Python, C#, Swift)
@@ -581,8 +681,20 @@ def extract_file(
 
             body = _find_body(node, config)
             if body:
+                pending_decs: list[str] = []
                 for child in body.children:
-                    walk(child, parent_class_nid=class_nid, parent_class_name=class_name)
+                    if config.decorator_types and child.type in config.decorator_types:
+                        # Accumulate method-level decorator for the next function node
+                        name = _extract_decorator_name(child, source)
+                        if name:
+                            pending_decs.append(name)
+                    elif child.type in config.function_types or child.type in config.class_types:
+                        walk(child, parent_class_nid=class_nid, parent_class_name=class_name,
+                             _decorators=pending_decs or None)
+                        pending_decs = []
+                    else:
+                        pending_decs = []
+                        walk(child, parent_class_nid=class_nid, parent_class_name=class_name)
             return
 
         # Functions / methods
@@ -594,15 +706,16 @@ def extract_file(
             line = node.start_point[0] + 1
             end_line = node.end_point[0] + 1
 
+            meta = {"decorators": _decorators} if _decorators else {}
             if parent_class_nid and parent_class_name:
                 func_nid = make_node_id(repo_id, rel_path, parent_class_name, func_name)
                 label = make_label(parent_class_name, func_name, func_name)
-                add_node(func_nid, "function", label, lang, line, end_line)
+                add_node(func_nid, "function", label, lang, line, end_line, metadata=meta)
                 add_edge(parent_class_nid, func_nid, "method", line)
             else:
                 func_nid = make_node_id(repo_id, rel_path, None, func_name)
                 label = make_label(None, None, func_name)
-                add_node(func_nid, "function", label, lang, line, end_line)
+                add_node(func_nid, "function", label, lang, line, end_line, metadata=meta)
                 add_edge(file_nid, func_nid, "contains", line)
 
             body = _find_body(node, config)
