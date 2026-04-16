@@ -86,7 +86,12 @@ async def lifespan(server: FastMCP):
     }
 
 
-mcp = FastMCP("code_obsidian_mcp", lifespan=lifespan)
+mcp = FastMCP(
+    "code_obsidian_mcp",
+    lifespan=lifespan,
+    host=os.environ.get("MCP_HOST", "0.0.0.0"),
+    port=int(os.environ.get("MCP_PORT", "8000")),
+)
 
 
 # ---------------------------------------------------------------------------
