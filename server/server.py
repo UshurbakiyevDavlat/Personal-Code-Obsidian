@@ -32,6 +32,8 @@ from typing import Any, Optional
 import networkx as nx
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 # Ensure project root is on path (works when launched via run_server.py)
 _ROOT = Path(__file__).parent.parent
@@ -92,6 +94,15 @@ mcp = FastMCP(
     host=os.environ.get("MCP_HOST", "0.0.0.0"),
     port=int(os.environ.get("MCP_PORT", "8000")),
 )
+
+
+# ---------------------------------------------------------------------------
+# Health check endpoint
+# ---------------------------------------------------------------------------
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request) -> JSONResponse:
+    return JSONResponse({"status": "ok", "service": "code-obsidian-mcp"})
 
 
 # ---------------------------------------------------------------------------
