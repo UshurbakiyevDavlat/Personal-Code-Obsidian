@@ -252,6 +252,7 @@ def index_repo(
                 line_start=n.get("line_start"),
                 line_end=n.get("line_end"),
                 docstring=n.get("docstring"),
+                metadata=n.get("metadata", {}),
                 file_hash=n.get("file_hash"),
             ))
 
