@@ -1,6 +1,7 @@
 """
 graph/storage.py — Batch saving of nodes and edges to SQLite.
 """
+from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, asdict

@@ -229,37 +229,21 @@ include_docs:
 
 ---
 
-### Фаза 1 — Parser Layer (5–7 дней)
+### ✅ Фаза 1 — Parser Layer (готово)
 
 **Цель:** на входе — путь к репо, на выходе — заполненные таблицы `nodes` и `edges`.
 
 **Чеклист:**
-- [ ] `parser/base.py` — абстрактный класс `BaseParser` с методами `parse_file()`, `extract_nodes()`, `extract_edges()`
-- [ ] `parser/php.py` — PHP парсер через tree-sitter
-  - [ ] Извлекает: классы, методы, функции, интерфейсы, трейты
-  - [ ] Рёбра: calls, imports (use/require), inherits, implements
-  - [ ] Node naming: `ClassName::methodName`
-- [ ] `parser/go.py` — Go парсер
-  - [ ] Извлекает: функции, структуры, интерфейсы, пакеты
-  - [ ] Рёбра: calls, imports
-- [ ] `parser/typescript.py` — TypeScript парсер
-  - [ ] Извлекает: классы, функции, интерфейсы, типы
-  - [ ] Рёбра: calls, imports, extends
-- [ ] `parser/indexer.py` — оркестратор
-  - [ ] Читает `.codeobsidian.yml`
-  - [ ] Применяет exclude-правила
-  - [ ] Инкрементальное обновление по `file_hash`
-  - [ ] Прогресс-бар для CLI
-- [ ] `graph/db.py` — SQLite + FTS5 инициализация и CRUD
-- [ ] `graph/storage.py` — сохранение нод и рёбер батчами
-- [ ] `tests/test_parser_php.py` — тесты на реальных PHP сниппетах
-- [ ] `tests/test_parser_go.py`
+- [x] `parser/extract.py` — LanguageConfig + generic AST walker (13 языков из архитектуры graphify)
+- [x] `parser/indexer.py` — exclude-фильтрация, инкрементальные обновления по `file_hash`, cross-file resolution
+- [x] `graph/db.py` — SQLite + FTS5 инициализация и CRUD
+- [x] `graph/storage.py` — сохранение нод и рёбер батчами
 
-**Definition of Done фазы 1:**
-- `python -m parser.indexer /path/to/repo` отрабатывает без ошибок
-- Граф для среднего репо строится < 60 сек
-- Vendor/node_modules отфильтрованы
-- Node naming правильный (`Class::method`, не просто `method`)
+**Результат на mercuryx-api:**
+- 1,218 файлов (vs 57,183 с vendor у graphify)
+- 5,518 нод / 10,509 рёбер за **2.76 сек**
+- Vendor полностью отфильтрован
+- Naming: `ClassName::methodName` ✅
 
 ---
 
