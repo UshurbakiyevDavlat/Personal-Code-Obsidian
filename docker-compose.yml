@@ -1,0 +1,33 @@
+services:
+  code-obsidian:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: code-obsidian
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:8000:8000"   # Only accessible from localhost (Nginx proxies externally)
+
+    volumes:
+      - ./data:/app/data         # SQLite DB — persists between restarts
+      - ./repos:/app/repos       # Repos to index (clone them here on VPS)
+
+    environment:
+      - MCP_TRANSPORT=sse
+      - MCP_PORT=8000
+      - DB_PATH=/app/data/graph.db
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
