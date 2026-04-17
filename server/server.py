@@ -1,7 +1,7 @@
 """
 server/server.py — FastMCP server for personal-code-obsidian.
 
-7 tools:
+8 tools:
     graph_list_repos      — list all indexed repos
     graph_build           — index or re-index a repo
     graph_query           — FTS search across a repo
@@ -9,6 +9,7 @@ server/server.py — FastMCP server for personal-code-obsidian.
     graph_impact          — what breaks if this node changes
     graph_path            — shortest path between two nodes
     graph_overview        — critical nodes, communities, stats
+    graph_sync_kb         — generate KB document from graph (for kb_add_document)
 
 Transport:
     stdio  (default)   — for local Claude Code / claude mcp add
@@ -202,6 +203,12 @@ class ImpactInput(BaseModel):
     node: str = Field(..., description="Node name or full node ID whose change impact to analyse (e.g. 'PermissionHelper::can')")
     depth: int = Field(default=3, description="How many hops upstream to trace (1=direct callers, 3=full cascade)", ge=1, le=MAX_DEPTH)
 
+class SyncKbInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    repo_id: str = Field(..., description="Repo identifier (e.g. 'mercuryx-api')")
+    top_n: int = Field(default=15, description="Number of critical nodes to include in the KB document", ge=5, le=50)
+    max_communities: int = Field(default=10, description="Maximum number of communities to describe", ge=1, le=30)
+
 
 # ---------------------------------------------------------------------------
 # Tool 1 — graph_list_repos
@@ -314,6 +321,10 @@ async def graph_build(params: BuildInput) -> str:
             repo_path=repo_path,
             db_path=DB_PATH,
             force=params.force,
+        )
+        result["kb_sync"] = (
+            f"Graph ready. Call graph_sync_kb(repo_id='{result.get('repo_id', '')}') "
+            "to generate a KB document, then push it via kb_add_document."
         )
         return _ok(result)
     except Exception as e:
@@ -637,5 +648,211 @@ async def graph_overview(params: OverviewInput) -> str:
             },
             "entry_points": entries,
         })
+    except Exception as e:
+        return _err(str(e))
+
+
+# ---------------------------------------------------------------------------
+# Tool 8 — graph_sync_kb
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="graph_sync_kb",
+    annotations={
+        "title": "Generate KB Document from Repository Graph",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def graph_sync_kb(params: SyncKbInput) -> str:
+    """
+    Generate a rich architectural document from the repository graph,
+    ready to be pushed to the Knowledge Base via kb_add_document.
+
+    The document includes:
+    - Repository overview (stats, languages, relation types)
+    - Critical components (betweenness centrality choke-points) with docstrings
+    - Architectural clusters / bounded contexts (Louvain communities)
+    - Entry points (controllers, commands, consumers with no incoming dependencies)
+    - Dependency cycles (potential design smells)
+
+    Typical workflow in Cowork:
+        1. Call graph_sync_kb(repo_id="my-repo")
+        2. Take the returned `title` and `text`
+        3. Call kb_add_document(title=..., text=..., source_url=<notion link>)
+
+    Args:
+        params (SyncKbInput):
+            - repo_id (str): Repo identifier (e.g. 'mercuryx-api')
+            - top_n (int): Critical nodes to include (default: 15)
+            - max_communities (int): Max communities to describe (default: 10)
+
+    Returns:
+        str: JSON object:
+        {
+            "repo_id": "mercuryx-api",
+            "title": "mercuryx-api — Architecture Graph — 2026-04-17",
+            "text": "<full markdown document>",
+            "char_count": 4821,
+            "stats": { ... }
+        }
+    """
+    from datetime import date
+
+    db = Database(DB_PATH)
+    try:
+        loader = GraphLoader(db)
+        repo = db.get_repo(params.repo_id)
+        if not repo:
+            return _err(f"Repo '{params.repo_id}' not found. Run graph_build first.")
+
+        stats = loader.get_stats(params.repo_id)
+        G = loader.load_repo(params.repo_id)
+
+        critical = get_critical_nodes(G, top_n=params.top_n)
+        cycles = find_cycles(G, max_cycles=10)
+        communities = get_communities(G, min_size=3)
+        entries = get_entry_points(G, node_types=["function", "class"])[:20]
+
+        today = date.today().isoformat()
+        repo_name = stats.get("name", params.repo_id)
+        title = f"{repo_name} — Architecture Graph — {today}"
+
+        lines: list[str] = []
+
+        # ── Header ────────────────────────────────────────────────────────
+        lines += [
+            f"# {repo_name} — Architecture Knowledge",
+            f"",
+            f"> Auto-generated from code graph on {today}. "
+            f"Use for architecture questions, impact analysis, and onboarding.",
+            f"",
+        ]
+
+        # ── Stats ─────────────────────────────────────────────────────────
+        langs = stats.get("languages") or {}
+        lang_str = ", ".join(f"{k} ({v})" for k, v in sorted(langs.items(), key=lambda x: -x[1]))
+        relation_counts = stats.get("relation_counts") or {}
+        rel_str = ", ".join(f"{k}: {v}" for k, v in sorted(relation_counts.items(), key=lambda x: -x[1]))
+
+        lines += [
+            "## Overview",
+            f"",
+            f"- **Nodes:** {stats.get('node_count', 0):,}  |  **Edges:** {stats.get('edge_count', 0):,}",
+            f"- **Languages:** {lang_str or 'unknown'}",
+            f"- **Relations:** {rel_str or 'none'}",
+            f"- **Last indexed:** {stats.get('last_indexed', 'unknown')}",
+            f"",
+        ]
+
+        # ── Critical nodes ────────────────────────────────────────────────
+        lines += ["## Critical Components (architectural choke-points)", ""]
+        lines += [
+            "Components with highest betweenness centrality — "
+            "most paths in the dependency graph pass through these. "
+            "Changes here have the widest blast radius.",
+            "",
+        ]
+        crit_nodes = critical.get("nodes", [])
+        for i, n in enumerate(crit_nodes, 1):
+            nid = n.get("id", "")
+            name = n.get("name", nid.split("::")[-1])
+            ntype = n.get("type", "")
+            fpath = n.get("file_path", "")
+            betweenness = n.get("betweenness", 0)
+            in_deg = n.get("in_degree", 0)
+            out_deg = n.get("out_degree", 0)
+            doc = (n.get("docstring") or "").strip()
+
+            lines.append(f"### {i}. {name} `{ntype}`")
+            lines.append(f"- **File:** `{fpath}`")
+            lines.append(f"- **In-degree:** {in_deg} callers  |  **Out-degree:** {out_deg}  |  **Betweenness:** {betweenness:.6f}")
+            if doc:
+                lines.append(f"- **Description:** {doc}")
+            lines.append("")
+
+        # ── Communities / bounded contexts ────────────────────────────────
+        comm_list = communities.get("communities", [])[:params.max_communities]
+        algo = communities.get("algorithm", "unknown")
+        total_comms = communities.get("count", 0)
+
+        lines += [
+            f"## Architectural Clusters ({total_comms} total, algorithm: {algo})",
+            "",
+            "Each cluster is a likely bounded context or module. "
+            "Components within a cluster are more tightly coupled to each other than to the rest.",
+            "",
+        ]
+        for comm in comm_list:
+            cid = comm.get("id", "?")
+            size = comm.get("size", 0)
+            # 'nodes' holds the list of node IDs in this community
+            node_ids = comm.get("nodes", [])
+            # 'files' holds file paths if available
+            files = comm.get("files", [])
+
+            # Build readable node labels from IDs
+            readable = []
+            for nid in node_ids[:12]:
+                parts = nid.split("::")
+                readable.append("::".join(parts[-2:]) if len(parts) >= 2 else parts[-1])
+
+            lines.append(f"### Cluster {cid} ({size} nodes)")
+            if readable:
+                lines.append(f"Key components: {', '.join(readable)}")
+            if files:
+                # Show top-level directory patterns from files
+                dirs = sorted(set(f.split("/")[0] for f in files[:30] if "/" in f))[:5]
+                if dirs:
+                    lines.append(f"Primary directories: {', '.join(dirs)}")
+            if size > len(node_ids):
+                lines.append(f"_(showing {len(node_ids)} of {size} nodes)_")
+            lines.append("")
+
+        # ── Entry points ──────────────────────────────────────────────────
+        lines += ["## Entry Points", ""]
+        if entries:
+            lines += [
+                "Nodes with no incoming dependencies — likely HTTP controllers, "
+                "CLI commands, queue consumers, or scheduled jobs.",
+                "",
+            ]
+            for e in entries:
+                name = e.get("name", "")
+                fpath = e.get("file_path", "")
+                ntype = e.get("type", "")
+                lines.append(f"- **{name}** `{ntype}` — `{fpath}`")
+            lines.append("")
+        else:
+            lines += ["_No pure entry points found (all nodes have at least one incoming edge)._", ""]
+
+        # ── Cycles ────────────────────────────────────────────────────────
+        if cycles:
+            lines += ["## Dependency Cycles (design smells)", ""]
+            lines += [
+                f"Found {len(cycles)} circular dependency chain(s). "
+                "These may indicate tight coupling or architectural issues.",
+                "",
+            ]
+            for i, cycle in enumerate(cycles[:5], 1):
+                readable_cycle = []
+                for nid in cycle:
+                    parts = nid.split("::")
+                    readable_cycle.append("::".join(parts[-2:]) if len(parts) >= 2 else parts[-1])
+                lines.append(f"{i}. {' → '.join(readable_cycle)} → _(back to start)_")
+            lines.append("")
+
+        text = "\n".join(lines)
+
+        return _ok({
+            "repo_id": params.repo_id,
+            "title": title,
+            "text": text,
+            "char_count": len(text),
+            "stats": stats,
+        })
+
     except Exception as e:
         return _err(str(e))
