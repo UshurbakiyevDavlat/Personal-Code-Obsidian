@@ -24,7 +24,9 @@ RUN python -m venv /app/venv \
         tree-sitter-c-sharp \
         tree-sitter-kotlin \
         tree-sitter-scala \
-        tree-sitter-ruby
+        tree-sitter-ruby \
+        tree-sitter-c \
+        tree-sitter-cpp
 
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────

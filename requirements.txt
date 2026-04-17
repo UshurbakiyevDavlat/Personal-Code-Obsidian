@@ -1,5 +1,7 @@
 # Core parsing
 tree-sitter>=0.21.0
+tree-sitter-c>=0.21.0
+tree-sitter-cpp>=0.22.0
 
 # Graph algorithms
 networkx>=3.0

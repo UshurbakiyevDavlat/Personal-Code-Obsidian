@@ -272,17 +272,21 @@ def _get_c_func_name(node, source):
 
 
 def _get_cpp_func_name(node, source):
-    if node.type == "identifier":
+    # Base cases: bare name tokens
+    if node.type in ("identifier", "field_identifier"):
         return _read_text(node, source)
+    # SomeClass::method  (out-of-line definition)
     if node.type == "qualified_identifier":
         name_node = node.child_by_field_name("name")
         if name_node:
             return _read_text(name_node, source)
+    # Recurse into declarator (function_declarator → identifier/field_identifier)
     decl = node.child_by_field_name("declarator")
     if decl:
         return _get_cpp_func_name(decl, source)
+    # Fallback: first identifier/field_identifier child
     for child in node.children:
-        if child.type == "identifier":
+        if child.type in ("identifier", "field_identifier"):
             return _read_text(child, source)
     return None
 
@@ -452,6 +456,44 @@ _RUBY_CONFIG = LanguageConfig(
     function_boundary_types=frozenset({"method", "singleton_method"}),
 )
 
+# C function definition: type declarator(params) body
+# The declarator field holds a function_declarator whose declarator field holds
+# the actual identifier. _get_c_func_name recurses through this chain.
+_C_CONFIG = LanguageConfig(
+    ts_module="tree_sitter_c",
+    class_types=frozenset({"struct_specifier", "union_specifier", "enum_specifier"}),
+    function_types=frozenset({"function_definition"}),
+    import_types=frozenset({"preproc_include"}),
+    call_types=frozenset({"call_expression"}),
+    name_field="name",
+    name_fallback_child_types=("type_identifier",),
+    body_field="body",
+    call_function_field="function",
+    call_accessor_node_types=frozenset(),
+    function_boundary_types=frozenset({"function_definition"}),
+    resolve_function_name_fn=_get_c_func_name,
+    import_handler=_import_c,
+)
+
+# C++ extends C: adds class_specifier and qualified_identifier for method names
+# (e.g. void MyClass::doSomething() { } at file scope)
+_CPP_CONFIG = LanguageConfig(
+    ts_module="tree_sitter_cpp",
+    class_types=frozenset({"class_specifier", "struct_specifier", "union_specifier"}),
+    function_types=frozenset({"function_definition"}),
+    import_types=frozenset({"preproc_include"}),
+    call_types=frozenset({"call_expression"}),
+    name_field="name",
+    name_fallback_child_types=("type_identifier",),
+    body_field="body",
+    call_function_field="function",
+    call_accessor_node_types=frozenset({"field_expression"}),
+    call_accessor_field="field",
+    function_boundary_types=frozenset({"function_definition"}),
+    resolve_function_name_fn=_get_cpp_func_name,
+    import_handler=_import_c,
+)
+
 
 # ── Extension → config map ────────────────────────────────────────────────────
 
@@ -470,6 +512,14 @@ EXTENSION_CONFIG: dict[str, LanguageConfig] = {
     ".kts":   _KOTLIN_CONFIG,
     ".scala": _SCALA_CONFIG,
     ".rb":    _RUBY_CONFIG,
+    # C / C++
+    ".c":     _C_CONFIG,
+    ".h":     _C_CONFIG,
+    ".cpp":   _CPP_CONFIG,
+    ".cc":    _CPP_CONFIG,
+    ".cxx":   _CPP_CONFIG,
+    ".hpp":   _CPP_CONFIG,
+    ".hxx":   _CPP_CONFIG,
 }
 
 SUPPORTED_EXTENSIONS = set(EXTENSION_CONFIG.keys())
