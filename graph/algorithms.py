@@ -339,23 +339,92 @@ def get_communities(
 
 def get_entry_points(G: nx.DiGraph, node_types: list[str] | None = None) -> list[dict]:
     """
-    Nodes with no incoming edges = entry points / public API surface.
+    Nodes with no REAL incoming edges = entry points / public API surface.
     (Things nothing else calls — likely controllers, commands, cron jobs.)
+
+    We exclude 'contains' edges (structural parent→child relationships) from
+    the incoming count: every function has a 'contains' edge from its class,
+    every class has a 'contains' edge from its file — those are not callers.
     """
     result = []
     for nid in G.nodes:
-        if G.in_degree(nid) == 0:
+        # Count only non-structural incoming edges
+        non_structural_in = sum(
+            1 for _, _, d in G.in_edges(nid, data=True)
+            if d.get("relation") != "contains"
+        )
+        if non_structural_in > 0:
+            continue
+        attrs = G.nodes[nid]
+        if node_types and attrs.get("type") not in node_types:
+            continue
+        result.append({
+            "id": nid,
+            "name": attrs.get("name", nid),
+            "file_path": attrs.get("file_path", ""),
+            "type": attrs.get("type", ""),
+            "out_degree": G.out_degree(nid),
+        })
+    return sorted(result, key=lambda x: -x["out_degree"])
+
+
+def get_god_objects(
+    G: nx.DiGraph,
+    min_in: int = 8,
+    min_out: int = 8,
+    top_n: int = 10,
+) -> list[dict]:
+    """
+    Detect God Objects / God Classes — nodes with BOTH very high in-degree
+    AND very high out-degree (excluding 'contains' structural edges).
+
+    These components violate the Single Responsibility Principle: they are
+    called from many places AND depend on many others. Refactoring them has
+    the highest architectural impact.
+
+    Args:
+        min_in:  Minimum non-structural in-degree to qualify (default: 8)
+        min_out: Minimum out-degree to qualify (default: 8)
+        top_n:   How many to return (default: 10)
+
+    Returns:
+        [
+            {
+                "id": "...",
+                "name": "OrderService",
+                "file_path": "app/Services/OrderService.php",
+                "type": "class",
+                "in_degree": 24,
+                "out_degree": 18,
+                "coupling_score": 42,
+                "warning": "God Object: called from 24 places, depends on 18"
+            },
+            ...
+        ]
+    """
+    candidates = []
+    for nid in G.nodes:
+        # Exclude 'contains' from in-degree (same logic as get_entry_points)
+        real_in = sum(
+            1 for _, _, d in G.in_edges(nid, data=True)
+            if d.get("relation") != "contains"
+        )
+        real_out = G.out_degree(nid)
+        if real_in >= min_in and real_out >= min_out:
             attrs = G.nodes[nid]
-            if node_types and attrs.get("type") not in node_types:
-                continue
-            result.append({
+            coupling = real_in + real_out
+            candidates.append({
                 "id": nid,
                 "name": attrs.get("name", nid),
                 "file_path": attrs.get("file_path", ""),
                 "type": attrs.get("type", ""),
-                "out_degree": G.out_degree(nid),
+                "language": attrs.get("language", ""),
+                "in_degree": real_in,
+                "out_degree": real_out,
+                "coupling_score": coupling,
+                "warning": f"God Object: called from {real_in} places, depends on {real_out}",
             })
-    return sorted(result, key=lambda x: -x["out_degree"])
+    return sorted(candidates, key=lambda x: -x["coupling_score"])[:top_n]
 
 
 def get_dead_ends(G: nx.DiGraph, node_types: list[str] | None = None) -> list[dict]:

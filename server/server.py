@@ -23,8 +23,12 @@ Run as HTTP server for Cowork:
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import hmac
 import json
 import os
+import subprocess
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -56,6 +60,7 @@ from graph.algorithms import (
     get_communities,
     get_critical_nodes,
     get_entry_points,
+    get_god_objects,
 )
 from parser.indexer import index_repo
 
@@ -104,6 +109,110 @@ mcp = FastMCP(
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "code-obsidian-mcp"})
+
+
+# ---------------------------------------------------------------------------
+# GitHub Webhook — auto-rebuild on push
+# ---------------------------------------------------------------------------
+
+GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
+
+
+async def _rebuild_repo_async(repo_path: str, repo_id: str, ref: str) -> None:
+    """
+    Background task: git pull + incremental re-index.
+    Runs after webhook fires — does not block the HTTP response.
+    """
+    try:
+        pull = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        stdout = pull.stdout.strip() or pull.stderr.strip()
+        print(f"[webhook] git pull {repo_id} ({ref}): {stdout}")
+
+        result = index_repo(repo_path=repo_path, db_path=DB_PATH, force=False)
+        print(
+            f"[webhook] re-indexed {repo_id}: "
+            f"{result['nodes']} nodes, {result['edges']} edges "
+            f"in {result['elapsed_sec']}s"
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[webhook] git pull timeout for {repo_id}")
+    except Exception as e:
+        print(f"[webhook] error rebuilding {repo_id}: {e}")
+
+
+@mcp.custom_route("/webhook/github", methods=["POST"])
+async def github_webhook(request: Request) -> JSONResponse:
+    """
+    GitHub push webhook — triggers incremental re-index of the affected repo.
+
+    Setup on GitHub:
+        Payload URL:  https://davlat-obsidian.duckdns.org/webhook/github
+        Content type: application/json
+        Secret:       set GITHUB_WEBHOOK_SECRET env var (same value in GitHub)
+        Events:       Just the push event
+
+    The webhook matches the pushed repo by name against indexed repos in the DB.
+    Only push events to tracked branches trigger a rebuild.
+    """
+    body = await request.body()
+
+    # Verify HMAC signature if secret is configured
+    if GITHUB_WEBHOOK_SECRET:
+        sig_header = request.headers.get("X-Hub-Signature-256", "")
+        expected = "sha256=" + hmac.new(
+            GITHUB_WEBHOOK_SECRET.encode(), body, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(sig_header, expected):
+            return JSONResponse({"error": "invalid signature"}, status_code=401)
+
+    # Only handle push events
+    event_type = request.headers.get("X-GitHub-Event", "")
+    if event_type != "push":
+        return JSONResponse({"status": "ignored", "reason": f"event '{event_type}' not handled"})
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    repo_name = payload.get("repository", {}).get("name", "")
+    ref = payload.get("ref", "")  # e.g. "refs/heads/main"
+
+    if not repo_name:
+        return JSONResponse({"status": "ignored", "reason": "no repo name in payload"})
+
+    # Match against indexed repos (by name or id)
+    db = Database(DB_PATH)
+    repos = db.list_repos()
+    matched = next(
+        (r for r in repos if r["name"] == repo_name or r["id"] == repo_name),
+        None,
+    )
+
+    if not matched:
+        return JSONResponse({
+            "status": "ignored",
+            "reason": f"repo '{repo_name}' not indexed — run graph_build first",
+        })
+
+    repo_path = matched["path"]
+    repo_id = matched["id"]
+
+    # Fire-and-forget background rebuild
+    asyncio.create_task(_rebuild_repo_async(repo_path, repo_id, ref))
+
+    return JSONResponse({
+        "status": "queued",
+        "repo_id": repo_id,
+        "ref": ref,
+        "message": f"Re-index of '{repo_id}' started in background",
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -636,6 +745,7 @@ async def graph_overview(params: OverviewInput) -> str:
         cycles = find_cycles(G, max_cycles=20)
         communities = get_communities(G, min_size=3)
         entries = get_entry_points(G, node_types=["function", "class"])[:20]
+        god_objs = get_god_objects(G, top_n=10)
 
         return _ok({
             "stats": stats,
@@ -647,6 +757,7 @@ async def graph_overview(params: OverviewInput) -> str:
                 "top": communities["communities"][:10],
             },
             "entry_points": entries,
+            "god_objects": god_objs,
         })
     except Exception as e:
         return _err(str(e))
@@ -715,6 +826,7 @@ async def graph_sync_kb(params: SyncKbInput) -> str:
         cycles = find_cycles(G, max_cycles=10)
         communities = get_communities(G, min_size=3)
         entries = get_entry_points(G, node_types=["function", "class"])[:20]
+        god_objs = get_god_objects(G, top_n=10)
 
         today = date.today().isoformat()
         repo_name = stats.get("name", params.repo_id)
@@ -827,6 +939,26 @@ async def graph_sync_kb(params: SyncKbInput) -> str:
             lines.append("")
         else:
             lines += ["_No pure entry points found (all nodes have at least one incoming edge)._", ""]
+
+        # ── God Objects ───────────────────────────────────────────────────────
+        if god_objs:
+            lines += ["## God Objects (SRP violations)", ""]
+            lines += [
+                "Components with both very high in-degree AND out-degree. "
+                "These are over-coupled and should be split into smaller units.",
+                "",
+            ]
+            for g in god_objs:
+                name = g.get("name", "")
+                fpath = g.get("file_path", "")
+                ntype = g.get("type", "")
+                in_d = g.get("in_degree", 0)
+                out_d = g.get("out_degree", 0)
+                lines.append(
+                    f"- **{name}** `{ntype}` — `{fpath}` "
+                    f"(in: {in_d}, out: {out_d}, coupling: {in_d + out_d})"
+                )
+            lines.append("")
 
         # ── Cycles ────────────────────────────────────────────────────────
         if cycles:

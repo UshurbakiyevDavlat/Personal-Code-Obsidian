@@ -203,3 +203,37 @@ class Database:
             "DELETE FROM nodes WHERE repo_id=? AND file_path=?",
             (repo_id, file_path),
         )
+
+    def get_repo_node_names(self, repo_id: str) -> dict[str, str]:
+        """
+        Return {name_lower: node_id} for ALL nodes in a repo.
+
+        Used in indexer to augment name_to_nid with nodes from unchanged files
+        (incremental build), so cross-module edges can still be resolved.
+        Builds both the full name key ("orderservice::create") and the short
+        key ("create") — matching the same logic as the indexer.
+        """
+        rows = self.execute(
+            "SELECT id, name FROM nodes WHERE repo_id=?",
+            (repo_id,),
+        )
+        result: dict[str, str] = {}
+        for row in rows:
+            nid = row["id"]
+            name = row["name"]
+            full_key = name.lower()
+            result[full_key] = nid
+            short_key = name.split("::")[-1].lower()
+            if short_key not in result:
+                result[short_key] = nid
+        return result
+
+    def get_repo_node_ids(self, repo_id: str) -> set[str]:
+        """
+        Return the set of all node IDs for a repo.
+
+        Used in indexer so save_edges doesn't drop edges whose target lives
+        in an unchanged file (not present in all_nodes from the current run).
+        """
+        rows = self.execute("SELECT id FROM nodes WHERE repo_id=?", (repo_id,))
+        return {row["id"] for row in rows}

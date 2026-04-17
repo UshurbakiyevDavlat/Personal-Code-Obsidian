@@ -274,7 +274,18 @@ def index_repo(
         if short not in name_to_nid:
             name_to_nid[short] = node.id
 
+    # Augment name_to_nid and known_ids from the DB.
+    # During incremental builds, skipped (unchanged) files are NOT in all_nodes,
+    # so cross-file edges pointing to those nodes would be dropped without this.
+    # We load ALL existing names/IDs for this repo and fill in the gaps.
+    db_names = db.get_repo_node_names(repo_id)
+    for k, v in db_names.items():
+        if k not in name_to_nid:
+            name_to_nid[k] = v
+
     known_ids = {n.id for n in all_nodes}
+    known_ids.update(db.get_repo_node_ids(repo_id))
+
     resolved_edges = resolve_edges(all_raw_edges, name_to_nid, repo_id)
     e_saved = storage.save_edges(resolved_edges, known_ids)
 
