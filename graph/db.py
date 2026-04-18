@@ -89,6 +89,16 @@ CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_edges_repo   ON edges(repo_id);
 CREATE INDEX IF NOT EXISTS idx_edges_rel    ON edges(repo_id, relation);
+
+-- Pre-computed graph metrics (betweenness, communities, god objects, etc.)
+-- Populated by graph_build, read by graph_overview for instant response.
+CREATE TABLE IF NOT EXISTS repo_metrics (
+    repo_id     TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    metric      TEXT NOT NULL,        -- e.g. 'overview'
+    value_json  TEXT NOT NULL,        -- JSON blob
+    computed_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (repo_id, metric)
+);
 """
 
 CONFIDENCE_WEIGHTS = {
@@ -237,3 +247,30 @@ class Database:
         """
         rows = self.execute("SELECT id FROM nodes WHERE repo_id=?", (repo_id,))
         return {row["id"] for row in rows}
+
+    # --- Metrics helpers ---
+
+    def save_metrics(self, repo_id: str, metric: str, value: dict) -> None:
+        """Upsert a pre-computed metric blob for a repo."""
+        import json as _json
+        self.execute(
+            """
+            INSERT INTO repo_metrics (repo_id, metric, value_json, computed_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(repo_id, metric) DO UPDATE SET
+                value_json  = excluded.value_json,
+                computed_at = excluded.computed_at
+            """,
+            (repo_id, metric, _json.dumps(value)),
+        )
+
+    def get_metrics(self, repo_id: str, metric: str) -> dict | None:
+        """Return a pre-computed metric blob, or None if not yet computed."""
+        import json as _json
+        rows = self.execute(
+            "SELECT value_json FROM repo_metrics WHERE repo_id=? AND metric=?",
+            (repo_id, metric),
+        )
+        if not rows:
+            return None
+        return _json.loads(rows[0]["value_json"])

@@ -84,15 +84,24 @@ def is_excluded(path: Path, repo_root: Path, excludes: set[str]) -> bool:
 
     for pattern in excludes:
         pattern = pattern.strip("/")
-        # Match any directory component or path prefix
-        if pattern in parts:
-            return True
-        if rel_str.startswith(pattern + "/") or rel_str == pattern:
-            return True
-        # Glob-style wildcard at the end (e.g. "**/migrations/**")
         if "**" in pattern:
+            # Glob-style: extract the meaningful segment and match anywhere in path
             seg = pattern.replace("**/", "").replace("/**", "")
             if seg in parts:
+                return True
+            continue
+        if "/" in pattern:
+            # Multi-component pattern like "public/js" — match anywhere in path.
+            # Covers nested cases: "oms/public/js/app.js" excluded by "public/js".
+            padded_rel = "/" + rel_str + "/"
+            padded_pat = "/" + pattern + "/"
+            if padded_pat in padded_rel:
+                return True
+        else:
+            # Single component — match any directory part or root-level prefix
+            if pattern in parts:
+                return True
+            if rel_str.startswith(pattern + "/") or rel_str == pattern:
                 return True
 
     return False
@@ -295,6 +304,33 @@ def index_repo(
 
     elapsed = round(time.time() - t0, 2)
     print(f"[indexer] done in {elapsed}s: {n_saved} nodes, {e_saved} edges")
+
+    # --- Pass 4: Pre-compute graph metrics (betweenness, communities, etc.) ---
+    # Stored in repo_metrics so graph_overview reads from DB instantly (no timeout).
+    try:
+        from graph.loader import GraphLoader
+        from graph.algorithms import (
+            find_cycles,
+            get_communities,
+            get_critical_nodes,
+            get_entry_points,
+            get_god_objects,
+        )
+        print(f"[indexer] computing graph metrics for {repo_id}...")
+        t_metrics = time.time()
+        loader = GraphLoader(db)
+        G = loader.load_repo(repo_id)
+        metrics = {
+            "critical_nodes": get_critical_nodes(G, top_n=20)["nodes"],
+            "god_objects":    get_god_objects(G, top_n=10),
+            "cycles":         find_cycles(G, max_cycles=20),
+            "communities":    get_communities(G, min_size=3),
+            "entry_points":   get_entry_points(G, node_types=["function", "class"])[:20],
+        }
+        db.save_metrics(repo_id, "overview", metrics)
+        print(f"[indexer] metrics computed in {round(time.time() - t_metrics, 2)}s")
+    except Exception as e:
+        print(f"[indexer] warning: metrics computation failed: {e}")
 
     return {
         "repo_id": repo_id,

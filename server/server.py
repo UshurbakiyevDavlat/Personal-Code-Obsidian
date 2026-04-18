@@ -739,7 +739,33 @@ async def graph_overview(params: OverviewInput) -> str:
             return _err(f"Repo '{params.repo_id}' not found. Run graph_build first.")
 
         stats = loader.get_stats(params.repo_id)
+
+        # Try pre-computed metrics first (populated by graph_build — instant read)
+        cached = db.get_metrics(params.repo_id, "overview")
+        if cached:
+            communities = cached.get("communities", {})
+            return _ok({
+                "stats": stats,
+                "critical_nodes": cached.get("critical_nodes", [])[:params.top_n],
+                "cycles": cached.get("cycles", {}),
+                "communities": {
+                    "count": communities.get("count", 0),
+                    "algorithm": communities.get("algorithm"),
+                    "top": communities.get("communities", [])[:10],
+                },
+                "entry_points": cached.get("entry_points", []),
+                "god_objects": cached.get("god_objects", []),
+                "_cache": "precomputed",
+            })
+
+        # Fallback: compute on-the-fly (only for small repos where it's fast)
         G = loader.load_repo(params.repo_id)
+        n = G.number_of_nodes()
+        if n > 10_000:
+            return _err(
+                f"Repo '{params.repo_id}' has {n} nodes — metrics not yet computed. "
+                "Run graph_build to pre-compute them, then retry."
+            )
 
         critical = get_critical_nodes(G, top_n=params.top_n)
         cycles = find_cycles(G, max_cycles=20)
@@ -758,6 +784,7 @@ async def graph_overview(params: OverviewInput) -> str:
             },
             "entry_points": entries,
             "god_objects": god_objs,
+            "_cache": "live",
         })
     except Exception as e:
         return _err(str(e))
