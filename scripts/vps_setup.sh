@@ -25,9 +25,9 @@ set -euo pipefail
 # ── Config ────────────────────────────────────────────────────────────────────
 GITHUB_USER="UshurbakiyevDavlat"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
-REPOS_DIR="${REPOS_DIR:-$HOME/repos}"
-DB_PATH="${DB_PATH:-$HOME/Personal-Code-Obsidian/data/graph.db}"
-MCP_URL="${MCP_URL:-http://localhost:8000}"
+REPOS_DIR="${REPOS_DIR:-/opt/Personal-Code-Obsidian/repos}"
+DB_PATH="${DB_PATH:-/opt/Personal-Code-Obsidian/data/graph.db}"
+MCP_URL="${MCP_URL:-http://localhost:8002}"
 MCP_AUTH_TOKEN="${MCP_AUTH_TOKEN:-}"
 
 # ── Repos list ────────────────────────────────────────────────────────────────
