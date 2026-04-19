@@ -95,7 +95,7 @@ for entry in "${REPOS[@]}"; do
 done
 
 # ── Step 3: Create auto_pull.sh ───────────────────────────────────────────────
-AUTO_PULL="$HOME/auto_pull.sh"
+AUTO_PULL="/opt/Personal-Code-Obsidian/auto_pull.sh"
 log "Writing $AUTO_PULL"
 
 cat > "$AUTO_PULL" << 'AUTOPULL'
@@ -108,7 +108,7 @@ set -euo pipefail
 REPOS_DIR="${REPOS_DIR:-/opt/Personal-Code-Obsidian/repos}"
 MCP_URL="${MCP_URL:-http://localhost:8002}"
 MCP_AUTH_TOKEN="${MCP_AUTH_TOKEN:-}"
-LOG="$HOME/auto_pull.log"
+LOG="/opt/Personal-Code-Obsidian/auto_pull.log"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
@@ -141,7 +141,7 @@ chmod +x "$AUTO_PULL"
 info "Created: $AUTO_PULL"
 
 # ── Step 4: Add cron job ──────────────────────────────────────────────────────
-CRON_JOB="*/30 * * * * REPOS_DIR=$REPOS_DIR MCP_URL=$MCP_URL MCP_AUTH_TOKEN=$MCP_AUTH_TOKEN $AUTO_PULL >> $HOME/auto_pull.log 2>&1"
+CRON_JOB="*/30 * * * * REPOS_DIR=$REPOS_DIR MCP_URL=$MCP_URL MCP_AUTH_TOKEN=$MCP_AUTH_TOKEN $AUTO_PULL >> /opt/Personal-Code-Obsidian/auto_pull.log 2>&1"
 
 log "Adding cron job (every 30 min)..."
 
