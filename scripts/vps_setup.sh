@@ -105,8 +105,8 @@ cat > "$AUTO_PULL" << 'AUTOPULL'
 
 set -euo pipefail
 
-REPOS_DIR="${REPOS_DIR:-$HOME/repos}"
-MCP_URL="${MCP_URL:-http://localhost:8000}"
+REPOS_DIR="${REPOS_DIR:-/opt/Personal-Code-Obsidian/repos}"
+MCP_URL="${MCP_URL:-http://localhost:8002}"
 MCP_AUTH_TOKEN="${MCP_AUTH_TOKEN:-}"
 LOG="$HOME/auto_pull.log"
 
