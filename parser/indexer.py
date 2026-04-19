@@ -33,8 +33,11 @@ except ImportError:
 DEFAULT_EXCLUDE = {
     "vendor", "node_modules", "public/js", "public/css", "public/build",
     "storage", "bootstrap/cache", ".git", ".idea", "__pycache__",
-    "dist", "build", ".next", ".nuxt",
+    "dist", "build", ".next", ".nuxt", "stories", "umd",
 }
+
+# Filename suffix patterns that are always excluded regardless of directory
+EXCLUDE_SUFFIXES = {".min.js", ".min.css", ".bundle.js", ".chunk.js"}
 
 @dataclass
 class RepoConfig:
@@ -115,6 +118,10 @@ def collect_files(repo_root: Path, excludes: set[str]) -> list[Path]:
         if not p.is_file():
             continue
         if p.suffix.lower() not in ext:
+            continue
+        # Skip minified/bundled files by suffix (e.g. app.min.js, vendor.bundle.js)
+        name_lower = p.name.lower()
+        if any(name_lower.endswith(sfx) for sfx in EXCLUDE_SUFFIXES):
             continue
         if is_excluded(p, repo_root, excludes):
             continue
@@ -219,6 +226,27 @@ def index_repo(
     # Collect files
     files = collect_files(repo_root, excludes)
     print(f"[indexer] found {len(files)} files after exclude filter")
+
+    # --- Cleanup: remove nodes from files that are now excluded ---
+    # Happens when exclude rules change between runs (e.g. public/js added).
+    # Compare DB file paths against the current allowed set.
+    if existing_hashes:  # only on incremental runs (force clears existing_hashes)
+        allowed_paths = {str(f.relative_to(repo_root)) for f in files}
+        stale = [fp for fp in existing_hashes if fp not in allowed_paths]
+        if stale:
+            print(f"[indexer] removing {len(stale)} newly-excluded files from DB...")
+            for fp in stale:
+                db.delete_nodes_by_file(repo_id, fp)
+    elif force:
+        # On force re-index: delete nodes from files that won't be re-parsed
+        # (i.e. files currently in DB but excluded by current rules)
+        all_db_hashes = db.get_file_hashes(repo_id)
+        allowed_paths = {str(f.relative_to(repo_root)) for f in files}
+        stale = [fp for fp in all_db_hashes if fp not in allowed_paths]
+        if stale:
+            print(f"[indexer] force: removing {len(stale)} excluded files from DB...")
+            for fp in stale:
+                db.delete_nodes_by_file(repo_id, fp)
 
     # --- Pass 1: Extract all files ---
     all_nodes: list[Node] = []
