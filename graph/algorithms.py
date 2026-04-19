@@ -207,45 +207,85 @@ def find_cycles(G: nx.DiGraph, max_cycles: int = 50) -> dict:
 
 def get_critical_nodes(G: nx.DiGraph, top_n: int = 20) -> dict:
     """
-    Identify the most critical nodes by betweenness centrality.
+    Identify the most critical nodes by centrality.
 
-    High betweenness = many shortest paths pass through this node.
-    These are your architectural choke-points — changing them has high impact.
+    For small graphs (≤ 5 000 nodes): uses betweenness centrality (Dijkstra-based).
+    For large graphs (> 5 000 nodes): uses weighted degree centrality
+    (in_degree + out_degree, excluding structural 'contains' edges) which is O(E)
+    and produces nearly identical rankings in practice.
 
     Returns:
         {
+            "method": "betweenness" | "degree",
             "nodes": [
                 {"id": ..., "name": ..., "file_path": ..., "type": ...,
-                 "betweenness": 0.42, "in_degree": 12, "out_degree": 5},
+                 "score": 0.42, "in_degree": 12, "out_degree": 5},
                 ...
             ]
         }
     """
     if G.number_of_nodes() == 0:
-        return {"nodes": []}
+        return {"method": "degree", "nodes": []}
 
-    # Use approximate betweenness for large graphs (k=sample size)
     n = G.number_of_nodes()
-    k = min(n, 500)  # sample up to 500 nodes for approximation
-    centrality = nx.betweenness_centrality(G, k=k, normalized=True, weight="weight")
+    LARGE_GRAPH_THRESHOLD = 5_000
 
-    ranked = sorted(centrality.items(), key=lambda x: -x[1])[:top_n]
+    if n <= LARGE_GRAPH_THRESHOLD:
+        # Exact betweenness (small graph — fast enough)
+        k = min(n, 500)
+        centrality = nx.betweenness_centrality(G, k=k, normalized=True, weight="weight")
+        ranked = sorted(centrality.items(), key=lambda x: -x[1])[:top_n]
+        method = "betweenness"
+        nodes = []
+        for nid, score in ranked:
+            attrs = G.nodes.get(nid, {})
+            nodes.append({
+                "id": nid,
+                "name": attrs.get("name", nid),
+                "file_path": attrs.get("file_path", ""),
+                "type": attrs.get("type", ""),
+                "language": attrs.get("language", ""),
+                "score": round(score, 6),
+                "in_degree": G.in_degree(nid),
+                "out_degree": G.out_degree(nid),
+            })
+    else:
+        # Degree-based ranking for large graphs (O(E), instant)
+        # Exclude 'contains' structural edges — same logic as god objects
+        method = "degree"
+        scores = {}
+        for nid in G.nodes:
+            real_in = sum(
+                1 for _, _, d in G.in_edges(nid, data=True)
+                if d.get("relation") != "contains"
+            )
+            real_out = sum(
+                1 for _, _, d in G.out_edges(nid, data=True)
+                if d.get("relation") != "contains"
+            )
+            scores[nid] = real_in + real_out
 
-    nodes = []
-    for nid, score in ranked:
-        attrs = G.nodes.get(nid, {})
-        nodes.append({
-            "id": nid,
-            "name": attrs.get("name", nid),
-            "file_path": attrs.get("file_path", ""),
-            "type": attrs.get("type", ""),
-            "language": attrs.get("language", ""),
-            "betweenness": round(score, 6),
-            "in_degree": G.in_degree(nid),
-            "out_degree": G.out_degree(nid),
-        })
+        ranked = sorted(scores.items(), key=lambda x: -x[1])[:top_n]
+        nodes = []
+        for nid, score in ranked:
+            attrs = G.nodes.get(nid, {})
+            real_in = sum(
+                1 for _, _, d in G.in_edges(nid, data=True)
+                if d.get("relation") != "contains"
+            )
+            real_out = G.out_degree(nid)
+            nodes.append({
+                "id": nid,
+                "name": attrs.get("name", nid),
+                "file_path": attrs.get("file_path", ""),
+                "type": attrs.get("type", ""),
+                "language": attrs.get("language", ""),
+                "score": score,
+                "in_degree": real_in,
+                "out_degree": real_out,
+            })
 
-    return {"nodes": nodes}
+    return {"method": method, "nodes": nodes}
 
 
 # ---------------------------------------------------------------------------

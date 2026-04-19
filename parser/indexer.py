@@ -320,10 +320,20 @@ def index_repo(
         t_metrics = time.time()
         loader = GraphLoader(db)
         G = loader.load_repo(repo_id)
+        n_nodes = G.number_of_nodes()
+
+        # Cycles detection is skipped for large graphs — nx.simple_cycles
+        # can run indefinitely on dense graphs with 10k+ nodes.
+        if n_nodes <= 5_000:
+            cycles = find_cycles(G, max_cycles=20)
+        else:
+            cycles = {"found": None, "count": 0, "cycles": [],
+                      "skipped": True, "reason": f"graph too large ({n_nodes} nodes)"}
+
         metrics = {
             "critical_nodes": get_critical_nodes(G, top_n=20)["nodes"],
             "god_objects":    get_god_objects(G, top_n=10),
-            "cycles":         find_cycles(G, max_cycles=20),
+            "cycles":         cycles,
             "communities":    get_communities(G, min_size=3),
             "entry_points":   get_entry_points(G, node_types=["function", "class"])[:20],
         }
