@@ -117,18 +117,37 @@ async def health_check(request: Request) -> JSONResponse:
 
 GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
 
-# Git credential helper: mount ./git-credentials on host → /root/.git-credentials in container
-# File format: https://TOKEN@github.com
+# Git credential helper — built from GITHUB_TOKEN env var (set in docker-compose via .env)
 _GIT_CREDENTIALS_PATH = "/root/.git-credentials"
+_git_credentials_written = False
 
 
 def _ensure_git_credentials() -> None:
-    """Configure git to use the mounted .git-credentials file (for private repos)."""
-    if os.path.exists(_GIT_CREDENTIALS_PATH):
-        subprocess.run(
-            ["git", "config", "--global", "credential.helper", f"store --file={_GIT_CREDENTIALS_PATH}"],
-            capture_output=True,
-        )
+    """
+    Write /root/.git-credentials from GITHUB_TOKEN env var (once per process),
+    so git pull works for private repos inside the container.
+    Requires GITHUB_TOKEN and GITHUB_USER to be set in the environment.
+    """
+    global _git_credentials_written
+    if _git_credentials_written:
+        return
+
+    token = os.environ.get("GITHUB_TOKEN", "")
+    user = os.environ.get("GITHUB_USER", "")
+    if not token:
+        print("[webhook] GITHUB_TOKEN not set — git pull may fail for private repos")
+        return
+
+    with open(_GIT_CREDENTIALS_PATH, "w") as f:
+        f.write(f"https://{user}:{token}@github.com\n")
+    os.chmod(_GIT_CREDENTIALS_PATH, 0o600)
+
+    subprocess.run(
+        ["git", "config", "--global", "credential.helper", f"store --file={_GIT_CREDENTIALS_PATH}"],
+        capture_output=True,
+    )
+    _git_credentials_written = True
+    print("[webhook] git credentials configured")
 
 
 async def _rebuild_repo_async(repo_path: str, repo_id: str, ref: str) -> None:
