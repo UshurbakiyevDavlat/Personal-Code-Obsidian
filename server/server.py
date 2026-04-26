@@ -117,6 +117,19 @@ async def health_check(request: Request) -> JSONResponse:
 
 GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
 
+# Git credential helper: mount ./git-credentials on host → /root/.git-credentials in container
+# File format: https://TOKEN@github.com
+_GIT_CREDENTIALS_PATH = "/root/.git-credentials"
+
+
+def _ensure_git_credentials() -> None:
+    """Configure git to use the mounted .git-credentials file (for private repos)."""
+    if os.path.exists(_GIT_CREDENTIALS_PATH):
+        subprocess.run(
+            ["git", "config", "--global", "credential.helper", f"store --file={_GIT_CREDENTIALS_PATH}"],
+            capture_output=True,
+        )
+
 
 async def _rebuild_repo_async(repo_path: str, repo_id: str, ref: str) -> None:
     """
@@ -124,6 +137,8 @@ async def _rebuild_repo_async(repo_path: str, repo_id: str, ref: str) -> None:
     Runs after webhook fires — does not block the HTTP response.
     """
     try:
+        _ensure_git_credentials()
+
         pull = subprocess.run(
             ["git", "pull", "--ff-only"],
             cwd=repo_path,
@@ -133,6 +148,10 @@ async def _rebuild_repo_async(repo_path: str, repo_id: str, ref: str) -> None:
         )
         stdout = pull.stdout.strip() or pull.stderr.strip()
         print(f"[webhook] git pull {repo_id} ({ref}): {stdout}")
+
+        if pull.returncode != 0:
+            print(f"[webhook] git pull FAILED for {repo_id} (rc={pull.returncode}): {stdout}")
+            return
 
         result = index_repo(repo_path=repo_path, db_path=DB_PATH, force=False)
         print(

@@ -12,12 +12,15 @@ services:
     volumes:
       - ./data:/app/data         # SQLite DB — persists between restarts
       - ./repos:/app/repos       # Repos to index (clone them here on VPS)
+      - ./git-credentials:/root/.git-credentials:ro  # GitHub token for private repos
 
     environment:
       - MCP_TRANSPORT=sse
       - MCP_PORT=8000
       - DB_PATH=/app/data/graph.db
       - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+      - GIT_CONFIG_GLOBAL=/dev/null  # avoid any host git config leaking in
 
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

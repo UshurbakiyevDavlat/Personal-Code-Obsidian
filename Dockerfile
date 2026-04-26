@@ -34,6 +34,11 @@ FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
+# Install git (required for webhook auto-pull in _rebuild_repo_async)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy venv from builder
 COPY --from=builder /app/venv /app/venv
 
