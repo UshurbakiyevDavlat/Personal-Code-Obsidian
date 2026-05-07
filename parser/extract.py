@@ -184,6 +184,9 @@ def _extract_docstring(node, source: bytes) -> str | None:
                             return _unquote_string(raw)
                     break  # only inspect the first expression_statement
             break  # only inspect the first block
+        elif child.type in ("function_definition", "class_definition"):
+            # decorated_definition wraps a function/class — recurse one level
+            return _extract_docstring(child, source)
 
     # Go/Rust/PHP: comment sibling immediately before this node in the parent
     parent = node.parent

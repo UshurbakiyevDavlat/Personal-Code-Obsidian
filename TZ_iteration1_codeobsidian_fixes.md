@@ -98,24 +98,19 @@ def _extract_docstring(node, source_bytes: bytes) -> str | None:
     """
     # Python: первый child типа expression_statement → string
     for child in node.children:
-        if child.type == "block" or child.type == "body":
+        if child.type == "block":
             for stmt in child.children:
                 if stmt.type == "expression_statement":
                     for expr in stmt.children:
                         if expr.type == "string":
-                            raw = source_bytes[expr.start_byte:expr.end_byte].decode("utf-8", errors="replace")
-                            # ВАЖНО: str.strip('"""') НЕ стрипает тройные кавычки как подстроку —
-                            # метод принимает набор символов. raw.strip('"""') == raw.strip('"').
-                            # Правильно: проверять startswith/endswith явно.
-                            raw = raw.strip()
-                            if raw.startswith('"""') and raw.endswith('"""') and len(raw) >= 6:
-                                return raw[3:-3].strip() or None
-                            if raw.startswith("'''") and raw.endswith("'''") and len(raw) >= 6:
-                                return raw[3:-3].strip() or None
-                            if len(raw) >= 2 and raw[0] in ('"', "'") and raw[-1] == raw[0]:
-                                return raw[1:-1].strip() or None
-                            return None
-            break
+                            raw = source_bytes[expr.start_byte:expr.end_byte].decode("utf-8", errors="replace").strip()
+                            return _unquote_string(raw)
+                    break  # only inspect the first expression_statement
+            break  # only inspect the first block
+        elif child.type in ("function_definition", "class_definition"):
+            # ВАЖНО: decorated_definition (e.g. @mcp.tool) оборачивает function_definition.
+            # child.type == "block" не найти напрямую — нужно рекурсивно зайти в function_definition.
+            return _extract_docstring(child, source_bytes)
 
     # Go: block_comment или line_comment ДО узла
     # Ищем sibling comment перед текущим узлом
