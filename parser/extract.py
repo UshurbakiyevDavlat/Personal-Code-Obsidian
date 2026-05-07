@@ -134,6 +134,78 @@ def _find_body(node, config: LanguageConfig):
     return None
 
 
+def _unquote_string(raw: str) -> str | None:
+    """Strip quote delimiters from a Python string literal text."""
+    if raw.startswith('"""') and raw.endswith('"""') and len(raw) >= 6:
+        return raw[3:-3].strip() or None
+    if raw.startswith("'''") and raw.endswith("'''") and len(raw) >= 6:
+        return raw[3:-3].strip() or None
+    if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
+        return raw[1:-1].strip() or None
+    if raw.startswith("'") and raw.endswith("'") and len(raw) >= 2:
+        return raw[1:-1].strip() or None
+    return None
+
+
+def _clean_comment(comment: str) -> str | None:
+    """Strip comment markers from a doc-comment string (Go/Rust/PHP)."""
+    comment = comment.strip()
+    if comment.startswith("/**") and comment.endswith("*/"):
+        inner = comment[3:-2]
+        lines = [line.strip().lstrip("*").strip() for line in inner.split("\n")]
+        return " ".join(line for line in lines if line) or None
+    if comment.startswith("/*") and comment.endswith("*/"):
+        inner = comment[2:-2]
+        lines = [line.strip().lstrip("*").strip() for line in inner.split("\n")]
+        return " ".join(line for line in lines if line) or None
+    if comment.startswith("///"):
+        return comment[3:].strip() or None
+    if comment.startswith("//"):
+        return comment[2:].strip() or None
+    return comment.strip() or None
+
+
+def _extract_docstring(node, source: bytes) -> str | None:
+    """
+    Extract docstring/doc-comment from a function or class AST node.
+
+    Python: first string literal in the body block.
+    Go/Rust/PHP: comment node immediately preceding this node in the parent.
+    Returns None if nothing found — never raises.
+    """
+    # Python-style: first child of body block that is an expression_statement → string
+    for child in node.children:
+        if child.type == "block":
+            for stmt in child.children:
+                if stmt.type == "expression_statement":
+                    for expr in stmt.children:
+                        if expr.type == "string":
+                            raw = source[expr.start_byte:expr.end_byte].decode("utf-8", errors="replace").strip()
+                            return _unquote_string(raw)
+                    break  # only inspect the first expression_statement
+            break  # only inspect the first block
+
+    # Go/Rust/PHP: comment sibling immediately before this node in the parent
+    parent = node.parent
+    if not parent:
+        return None
+
+    prev_sibling = None
+    for child in parent.children:
+        if child == node:
+            if prev_sibling is not None and prev_sibling.type in (
+                "comment", "block_comment", "line_comment"
+            ):
+                raw = source[prev_sibling.start_byte:prev_sibling.end_byte].decode(
+                    "utf-8", errors="replace"
+                )
+                return _clean_comment(raw)
+            break
+        prev_sibling = child
+
+    return None
+
+
 # ── Import handlers (from graphify, unchanged) ────────────────────────────────
 
 def _import_python(node, source, file_nid, stem, edges, str_path):
@@ -723,7 +795,8 @@ def extract_file(
             end_line = node.end_point[0] + 1
 
             meta = {"decorators": _decorators} if _decorators else {}
-            add_node(class_nid, "class", class_name, lang, line, end_line, metadata=meta)
+            add_node(class_nid, "class", class_name, lang, line, end_line,
+                     docstring=_extract_docstring(node, source), metadata=meta)
             add_edge(file_nid, class_nid, "contains", line)
 
             # Inheritance (PHP, Python, C#, Swift)
@@ -757,15 +830,18 @@ def extract_file(
             end_line = node.end_point[0] + 1
 
             meta = {"decorators": _decorators} if _decorators else {}
+            docstring = _extract_docstring(node, source)
             if parent_class_nid and parent_class_name:
                 func_nid = make_node_id(repo_id, rel_path, parent_class_name, func_name)
                 label = make_label(parent_class_name, func_name, func_name)
-                add_node(func_nid, "function", label, lang, line, end_line, metadata=meta)
+                add_node(func_nid, "function", label, lang, line, end_line,
+                         docstring=docstring, metadata=meta)
                 add_edge(parent_class_nid, func_nid, "method", line)
             else:
                 func_nid = make_node_id(repo_id, rel_path, None, func_name)
                 label = make_label(None, None, func_name)
-                add_node(func_nid, "function", label, lang, line, end_line, metadata=meta)
+                add_node(func_nid, "function", label, lang, line, end_line,
+                         docstring=docstring, metadata=meta)
                 add_edge(file_nid, func_nid, "contains", line)
 
             body = _find_body(node, config)
